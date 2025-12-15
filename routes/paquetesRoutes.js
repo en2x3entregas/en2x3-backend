@@ -1,4 +1,3 @@
-// backend/routes/paquetesRoutes.js
 import { Router } from "express";
 import {
   listarPaquetes,
@@ -15,14 +14,16 @@ const router = Router();
 
 // Base: /api/paquetes
 router.get("/", listarPaquetes);
-router.get("/:id", obtenerPaquete);
 router.post("/", crearPaquete);
-router.put("/:id", actualizarPaquete);
-router.delete("/:id", eliminarPaquete);
 
-// Extra (estado / coords / geocode)
+// Extra
+router.post("/geocode-lote", geocodificarLote);
 router.patch("/:id/estado", actualizarEstado);
 router.put("/:id/coords", actualizarCoords);
-router.post("/geocode-lote", geocodificarLote);
+
+// CRUD por ID
+router.get("/:id", obtenerPaquete);
+router.put("/:id", actualizarPaquete);
+router.delete("/:id", eliminarPaquete);
 
 export default router;
