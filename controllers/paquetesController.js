@@ -2,85 +2,74 @@ import { readPaquetes, writePaquetes } from "../utils/fileStore.js";
 import { normalizePaquete, parseCoord, isValidLatLng } from "../models/Paquete.js";
 import { geocodeNominatim, sleep } from "../utils/geocode.js";
 
-function findIndexByAnyId(arr, id) {
-  const sid = String(id);
-  return arr.findIndex((p) => String(p.idPaquete ?? p.id) === sid);
+function anyId(p) {
+  return String(p?.idPaquete ?? p?.id ?? "");
 }
 
+function findIndexByAnyId(arr, id) {
+  const sid = String(id);
+  return arr.findIndex((p) => anyId(p) === sid);
+}
+
+// GET /api/paquetes  (devuelve ARRAY para compatibilidad con tu frontend)
 export async function listarPaquetes(_req, res) {
   const paquetes = await readPaquetes();
-  // Compatibilidad: devuelve ARRAY (como tu server.js viejo)
   res.json(paquetes);
 }
 
+// GET /api/paquetes/:id
 export async function obtenerPaquete(req, res) {
   const paquetes = await readPaquetes();
   const idx = findIndexByAnyId(paquetes, req.params.id);
   if (idx === -1) return res.status(404).json({ ok: false, error: "Paquete no encontrado" });
-  res.json(paquetes[idx]);
+  res.json({ ok: true, data: paquetes[idx] });
 }
 
-// POST /api/paquetes (UPSERT: si existe, actualiza; si no, crea)
+// POST /api/paquetes
 export async function crearPaquete(req, res) {
   const paquetes = await readPaquetes();
-  const body = req.body || {};
 
-  const candidateId = body.idPaquete || body.id;
-  const idx = candidateId ? findIndexByAnyId(paquetes, candidateId) : -1;
+  // id robusto
+  const newId = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
 
-  const existing = idx !== -1 ? paquetes[idx] : null;
-  const nuevo = normalizePaquete(body, existing);
+  const input = { ...(req.body || {}), idPaquete: newId, id: newId };
+  let nuevo = normalizePaquete(input, null);
 
   if (!nuevo.direccion) {
     return res.status(400).json({ ok: false, error: "La dirección es obligatoria." });
   }
 
-  // Si es nuevo y no trae id, generamos uno robusto
-  if (!nuevo.idPaquete) {
-    const gen = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
-    nuevo.idPaquete = gen;
-    nuevo.id = gen;
+  // Geocodifica si NO llegan coords válidas
+  const hasCoords = Number.isFinite(nuevo.lat) && Number.isFinite(nuevo.lng);
+  if (!hasCoords) {
+    const query = [nuevo.direccion, nuevo.zona, "Colombia"].filter(Boolean).join(", ");
+    const r = await geocodeNominatim(query);
+    if (r?.lat && r?.lng) {
+      nuevo.lat = r.lat;
+      nuevo.lng = r.lng;
+    }
   }
 
-  // NO geocodificamos aquí para evitar bloqueo por rate limit (usa geocode-lote)
-  // Si llega lat/lng, se guardan tal cual (el front también tiene coords manuales)
+  // orden al final si no viene
+  if (!nuevo.orden) nuevo.orden = paquetes.length + 1;
 
-  if (idx !== -1) {
-    paquetes[idx] = nuevo;
-    await writePaquetes(paquetes);
-    return res.status(200).json(nuevo);
-  } else {
-    // orden automático si no viene
-    if (!nuevo.orden) nuevo.orden = paquetes.length + 1;
+  paquetes.push(nuevo);
+  await writePaquetes(paquetes);
 
-    paquetes.push(nuevo);
-    await writePaquetes(paquetes);
-    return res.status(201).json(nuevo);
-  }
+  res.status(201).json({ ok: true, data: nuevo });
 }
 
-// PUT /api/paquetes/:id (actualización general)
-// También funciona si solo mandas {estado:"entregado"} (compatibilidad)
+// PUT /api/paquetes/:id
 export async function actualizarPaquete(req, res) {
   const paquetes = await readPaquetes();
   const idx = findIndexByAnyId(paquetes, req.params.id);
   if (idx === -1) return res.status(404).json({ ok: false, error: "Paquete no encontrado" });
 
   const actualizado = normalizePaquete(req.body || {}, paquetes[idx]);
-
-  // lógica de tiempos según estado
-  const est = String(actualizado.estado || "").toLowerCase();
-  if (est === "entregado") actualizado.horaEntrega = actualizado.horaEntrega ?? new Date().toISOString();
-  if (est === "devuelto") actualizado.horaDevolucion = actualizado.horaDevolucion ?? new Date().toISOString();
-  if (est === "pendiente") {
-    actualizado.horaEntrega = null;
-    actualizado.horaDevolucion = null;
-  }
-
   paquetes[idx] = actualizado;
-  await writePaquetes(paquetes);
 
-  res.json(actualizado);
+  await writePaquetes(paquetes);
+  res.json({ ok: true, data: actualizado });
 }
 
 // PATCH /api/paquetes/:id/estado
@@ -109,7 +98,7 @@ export async function actualizarEstado(req, res) {
   paquetes[idx] = p;
   await writePaquetes(paquetes);
 
-  res.json(p);
+  res.json({ ok: true, data: p });
 }
 
 // PUT /api/paquetes/:id/coords
@@ -120,7 +109,7 @@ export async function actualizarCoords(req, res) {
   if (!isValidLatLng(lat, lng)) {
     return res.status(400).json({
       ok: false,
-      error: "Coordenadas inválidas. Lat -90..90; Lng -180..180."
+      error: "Coordenadas inválidas. Lat -90..90; Lng -180..180.",
     });
   }
 
@@ -132,14 +121,14 @@ export async function actualizarCoords(req, res) {
   paquetes[idx] = p;
 
   await writePaquetes(paquetes);
-  res.json(p);
+  res.json({ ok: true, data: p });
 }
 
 // DELETE /api/paquetes/:id
 export async function eliminarPaquete(req, res) {
   const paquetes = await readPaquetes();
   const idx = findIndexByAnyId(paquetes, req.params.id);
-  if (idx === -1) return res.status(404).json({ ok: false, error: "No encontrado" });
+  if (idx === -1) return res.status(404).json({ ok: false, error: "Paquete no encontrado" });
 
   const eliminado = paquetes.splice(idx, 1)[0];
   await writePaquetes(paquetes);
@@ -177,9 +166,8 @@ export async function geocodificarLote(req, res) {
         updated++;
       }
     } catch (e) {
-      errors.push({ id: p.idPaquete ?? p.id, error: e?.message || "geocode error" });
+      errors.push({ id: anyId(p), error: e?.message || "geocode error" });
     }
-
     await sleep(delay);
   }
 
@@ -190,7 +178,8 @@ export async function geocodificarLote(req, res) {
     scanned: objetivo.length,
     updated,
     skipped: objetivo.length - updated,
-    errors
+    errors,
   });
 }
+
 
