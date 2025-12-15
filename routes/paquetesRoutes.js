@@ -1,29 +1,28 @@
-import express from "express";
+// backend/routes/paquetesRoutes.js
+import { Router } from "express";
 import {
   listarPaquetes,
   obtenerPaquete,
   crearPaquete,
   actualizarPaquete,
+  eliminarPaquete,
   actualizarEstado,
   actualizarCoords,
-  eliminarPaquete,
   geocodificarLote
 } from "../controllers/paquetesController.js";
 
-const router = express.Router();
+const router = Router();
 
-// CRUD
-router.get("/paquetes", listarPaquetes);
-router.get("/paquetes/:id", obtenerPaquete);
-router.post("/paquetes", crearPaquete);
-router.put("/paquetes/:id", actualizarPaquete);
-router.delete("/paquetes/:id", eliminarPaquete);
+// Base: /api/paquetes
+router.get("/", listarPaquetes);
+router.get("/:id", obtenerPaquete);
+router.post("/", crearPaquete);
+router.put("/:id", actualizarPaquete);
+router.delete("/:id", eliminarPaquete);
 
-// Acciones específicas
-router.put("/paquetes/:id/estado", actualizarEstado);
-router.put("/paquetes/:id/coords", actualizarCoords);
-
-// Geocoding en lote (para tu widget)
-router.post("/paquetes/geocode-lote", geocodificarLote);
+// Extra (estado / coords / geocode)
+router.patch("/:id/estado", actualizarEstado);
+router.put("/:id/coords", actualizarCoords);
+router.post("/geocode-lote", geocodificarLote);
 
 export default router;
