@@ -31,6 +31,8 @@ export async function writePaquetes(paquetes) {
   await ensureFile();
   const tmp = `${DATA_PATH}.tmp`;
   const json = JSON.stringify(paquetes ?? [], null, 2);
+
+  // escritura atómica
   await fs.writeFile(tmp, json, "utf-8");
   await fs.rename(tmp, DATA_PATH);
 }
@@ -38,5 +40,6 @@ export async function writePaquetes(paquetes) {
 export function getDataPath() {
   return DATA_PATH;
 }
+
 
 
