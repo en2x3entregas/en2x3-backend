@@ -29,16 +29,11 @@ export async function geocodeNominatim(query) {
   const lng = Number(item.lon);
 
   if (!Number.isFinite(lat) || !Number.isFinite(lng)) return null;
-
-  return {
-    lat,
-    lng,
-    displayName: item.display_name || ""
-  };
+  return { lat, lng, displayName: item.display_name || "" };
 }
 
 export function sleep(ms) {
-  return new Promise((r) => setTimeout(r, ms));
+  return new Promise(r => setTimeout(r, ms));
 }
 
 
