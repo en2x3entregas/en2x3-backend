@@ -1,9 +1,3 @@
-async function getFetch() {
-  if (typeof fetch !== "undefined") return fetch;
-  const mod = await import("node-fetch");
-  return mod.default;
-}
-
 export async function geocodeNominatim(query) {
   const ua =
     process.env.GEOCODE_USER_AGENT ||
@@ -13,27 +7,28 @@ export async function geocodeNominatim(query) {
     "https://nominatim.openstreetmap.org/search?format=json&limit=1&q=" +
     encodeURIComponent(query);
 
-  const fetchFn = await getFetch();
+  try {
+    const res = await fetch(url, {
+      headers: { "User-Agent": ua, "Accept-Language": "es" },
+    });
 
-  const res = await fetchFn(url, {
-    headers: { "User-Agent": ua, "Accept-Language": "es" }
-  });
+    if (!res.ok) return null;
 
-  if (!res.ok) return null;
+    const arr = await res.json();
+    if (!Array.isArray(arr) || arr.length === 0) return null;
 
-  const arr = await res.json();
-  if (!Array.isArray(arr) || arr.length === 0) return null;
+    const item = arr[0];
+    const lat = Number(item.lat);
+    const lng = Number(item.lon);
 
-  const item = arr[0];
-  const lat = Number(item.lat);
-  const lng = Number(item.lon);
+    if (!Number.isFinite(lat) || !Number.isFinite(lng)) return null;
 
-  if (!Number.isFinite(lat) || !Number.isFinite(lng)) return null;
-  return { lat, lng, displayName: item.display_name || "" };
+    return { lat, lng, displayName: item.display_name || "" };
+  } catch {
+    return null;
+  }
 }
 
 export function sleep(ms) {
-  return new Promise(r => setTimeout(r, ms));
+  return new Promise((r) => setTimeout(r, ms));
 }
-
-
