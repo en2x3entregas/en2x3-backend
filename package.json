@@ -1,0 +1,28 @@
+{
+  "name": "en2x3-backend",
+  "version": "1.0.0",
+  "description": "Backend API para la aplicación de entregas En2x3.",
+  "main": "server.js",
+  "type": "module",
+  "scripts": {
+    "dev": "nodemon server.js",
+    "start": "node server.js"
+  },
+  "keywords": [
+    "entregas",
+    "logistica",
+    "api",
+    "express",
+    "en2x3"
+  ],
+  "author": "Héctor Giraldo",
+  "license": "MIT",
+  "dependencies": {
+    "cors": "^2.8.5",
+    "express": "^4.22.1",
+    "node-fetch": "^3.3.2"
+  },
+  "devDependencies": {
+    "nodemon": "^3.1.0"
+  }
+}
