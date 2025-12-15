@@ -31,7 +31,6 @@ export async function writePaquetes(paquetes) {
   await ensureFile();
   const tmp = `${DATA_PATH}.tmp`;
   const json = JSON.stringify(paquetes ?? [], null, 2);
-
   await fs.writeFile(tmp, json, "utf-8");
   await fs.rename(tmp, DATA_PATH);
 }
