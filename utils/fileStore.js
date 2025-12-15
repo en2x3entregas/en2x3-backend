@@ -1,4 +1,3 @@
-// backend/utils/fileStore.js
 import { promises as fs } from "fs";
 import path from "path";
 
@@ -6,13 +5,9 @@ const DATA_PATH = process.env.DATA_PATH
   ? path.resolve(process.env.DATA_PATH)
   : path.join(process.cwd(), "paquetes.json");
 
-export function getDataPath() {
-  return DATA_PATH;
-}
-
 async function ensureFile() {
   const dir = path.dirname(DATA_PATH);
-  await fs.mkdir(dir, { recursive: true }); // ✅ clave para /var/data
+  await fs.mkdir(dir, { recursive: true });
 
   try {
     await fs.access(DATA_PATH);
@@ -28,7 +23,6 @@ export async function readPaquetes() {
     const data = JSON.parse(raw || "[]");
     return Array.isArray(data) ? data : [];
   } catch {
-    await fs.writeFile(DATA_PATH, "[]", "utf-8");
     return [];
   }
 }
@@ -41,4 +35,9 @@ export async function writePaquetes(paquetes) {
   await fs.writeFile(tmp, json, "utf-8");
   await fs.rename(tmp, DATA_PATH);
 }
+
+export function getDataPath() {
+  return DATA_PATH;
+}
+
 
