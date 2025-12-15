@@ -1,26 +1,22 @@
-// backend/utils/geocode.js
-const UA = process.env.GEOCODE_USER_AGENT || "en2x3-entregas/1.0";
-const NOMINATIM_URL = "https://nominatim.openstreetmap.org/search";
-
 async function getFetch() {
-  if (typeof fetch === "function") return fetch; // Node 18+
-  const mod = await import("node-fetch"); // fallback si un día Node es viejo
+  if (typeof fetch !== "undefined") return fetch;
+  const mod = await import("node-fetch");
   return mod.default;
 }
 
-export function sleep(ms) {
-  return new Promise((r) => setTimeout(r, ms));
-}
-
 export async function geocodeNominatim(query) {
-  const f = await getFetch();
+  const ua =
+    process.env.GEOCODE_USER_AGENT ||
+    "en2x3-entregas/1.0 (admin@en2x3entregas.com)";
 
   const url =
-    `${NOMINATIM_URL}?` +
-    new URLSearchParams({ format: "json", limit: "1", q: query }).toString();
+    "https://nominatim.openstreetmap.org/search?format=json&limit=1&q=" +
+    encodeURIComponent(query);
 
-  const res = await f(url, {
-    headers: { "User-Agent": UA, "Accept-Language": "es" }
+  const fetchFn = await getFetch();
+
+  const res = await fetchFn(url, {
+    headers: { "User-Agent": ua, "Accept-Language": "es" }
   });
 
   if (!res.ok) return null;
@@ -40,4 +36,9 @@ export async function geocodeNominatim(query) {
     displayName: item.display_name || ""
   };
 }
+
+export function sleep(ms) {
+  return new Promise((r) => setTimeout(r, ms));
+}
+
 
