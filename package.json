@@ -8,19 +8,13 @@
     "dev": "nodemon server.js",
     "start": "node server.js"
   },
-  "keywords": [
-    "entregas",
-    "logistica",
-    "api",
-    "express",
-    "en2x3"
-  ],
+  "keywords": ["entregas", "logistica", "api", "express", "en2x3"],
   "author": "Héctor Giraldo",
   "license": "MIT",
   "dependencies": {
-    "express": "^4.22.1",
     "cors": "^2.8.5",
     "dotenv": "^16.4.5",
+    "express": "^4.22.1",
     "node-fetch": "^3.3.2"
   },
   "devDependencies": {
