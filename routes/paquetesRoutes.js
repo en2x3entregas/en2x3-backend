@@ -29,3 +29,4 @@ router.put("/:id/coords", actualizarCoords);
 
 export default router;
 
+
