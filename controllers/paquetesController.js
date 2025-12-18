@@ -22,7 +22,9 @@ export async function obtenerPaquete(req, res) {
   const paquetes = await readPaquetes();
   const idx = findIndexByAnyId(paquetes, req.params.id);
   if (idx === -1) return res.status(404).json({ ok: false, error: "Paquete no encontrado" });
-  res.json({ ok: true, data: paquetes[idx] });
+
+  // ✅ compat: data y paquete
+  res.json({ ok: true, data: paquetes[idx], paquete: paquetes[idx] });
 }
 
 // POST /api/paquetes
@@ -56,7 +58,8 @@ export async function crearPaquete(req, res) {
   paquetes.push(nuevo);
   await writePaquetes(paquetes);
 
-  res.status(201).json({ ok: true, data: nuevo });
+  // ✅ compat: data y paquete
+  res.status(201).json({ ok: true, data: nuevo, paquete: nuevo });
 }
 
 // PUT /api/paquetes/:id
@@ -69,10 +72,12 @@ export async function actualizarPaquete(req, res) {
   paquetes[idx] = actualizado;
 
   await writePaquetes(paquetes);
-  res.json({ ok: true, data: actualizado });
+
+  // ✅ compat: data y paquete
+  res.json({ ok: true, data: actualizado, paquete: actualizado });
 }
 
-// PATCH /api/paquetes/:id/estado
+// PATCH/PUT /api/paquetes/:id/estado
 export async function actualizarEstado(req, res) {
   const { estado } = req.body || {};
   const est = String(estado || "").toLowerCase();
@@ -98,10 +103,11 @@ export async function actualizarEstado(req, res) {
   paquetes[idx] = p;
   await writePaquetes(paquetes);
 
-  res.json({ ok: true, data: p });
+  // ✅ compat: data y paquete
+  res.json({ ok: true, data: p, paquete: p });
 }
 
-// PUT /api/paquetes/:id/coords
+// PUT/PATCH /api/paquetes/:id/coords
 export async function actualizarCoords(req, res) {
   const lat = parseCoord(req.body?.lat);
   const lng = parseCoord(req.body?.lng);
@@ -121,7 +127,9 @@ export async function actualizarCoords(req, res) {
   paquetes[idx] = p;
 
   await writePaquetes(paquetes);
-  res.json({ ok: true, data: p });
+
+  // ✅ compat: data y paquete
+  res.json({ ok: true, data: p, paquete: p });
 }
 
 // DELETE /api/paquetes/:id
@@ -181,6 +189,7 @@ export async function geocodificarLote(req, res) {
     errors,
   });
 }
+
 
 
 
