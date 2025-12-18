@@ -1,4 +1,14 @@
-// backend/server.js
+// backend/server.js — en2x3 Entregas (API PRO FINAL UNIFICADA)
+// ==========================================================
+// ✅ GET /api/paquetes -> ARRAY (compat app.js)
+// ✅ POST /api/paquetes -> { ok, paquete }
+// ✅ PUT/PATCH /api/paquetes/:id/estado
+// ✅ PUT/PATCH /api/paquetes/:id/coords
+// ✅ PUT/PATCH /api/paquetes/:id (compat app.js)
+// ✅ FIX definitivo: id === idPaquete (nunca se desincronizan)
+// ✅ /api/geocode?direccion=...
+// ==========================================================
+
 import dotenv from "dotenv";
 dotenv.config();
 
@@ -17,25 +27,36 @@ const ALLOWED_ORIGIN = process.env.ALLOWED_ORIGIN || "*";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
-const DATA_PATH = path.join(__dirname, "paquetes.json");
+
+// Puedes opcionalmente definir DATA_PATH en .env
+const DATA_PATH =
+  process.env.DATA_PATH?.trim() ||
+  path.join(__dirname, "paquetes.json");
 
 // ---------------------
 // CORS
 // ---------------------
+const allowedList =
+  ALLOWED_ORIGIN === "*"
+    ? "*"
+    : ALLOWED_ORIGIN.split(",").map((s) => s.trim()).filter(Boolean);
+
 app.use(
   cors({
     origin: (origin, cb) => {
       if (!origin) return cb(null, true);
-
-      if (ALLOWED_ORIGIN === "*") return cb(null, true);
-
-      const allowed = ALLOWED_ORIGIN.split(",").map((s) => s.trim());
-      if (allowed.includes(origin)) return cb(null, true);
-
+      if (allowedList === "*") return cb(null, true);
+      if (allowedList.includes(origin)) return cb(null, true);
       return cb(new Error("CORS bloqueado para: " + origin));
     },
-    methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-    allowedHeaders: ["Content-Type", "x-en2x3-cc", "x-en2x3-role", "x-en2x3-name"],
+    methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allowedHeaders: [
+      "Content-Type",
+      "Authorization",
+      "x-en2x3-cc",
+      "x-en2x3-role",
+      "x-en2x3-name",
+    ],
   })
 );
 
@@ -61,7 +82,7 @@ function normalizeEstado(e) {
   return "pendiente";
 }
 
-// fetch compatible
+// fetch compatible (node18+ ya trae fetch, pero dejamos fallback)
 async function fetchFn(...args) {
   if (typeof fetch === "function") return fetch(...args);
   const mod = await import("node-fetch");
@@ -94,11 +115,28 @@ async function guardarPaquetes(paquetes) {
   await fs.writeFile(DATA_PATH, JSON.stringify(paquetes, null, 2), "utf8");
 }
 
-function pickId(body, paquetes) {
-  const incoming = safeStr(body?.id || body?._id || "");
-  if (!incoming) return genId();
-  const exists = paquetes.some((p) => safeStr(p.id) === incoming);
-  return exists ? genId() : incoming;
+// ✅ FIX: encontrar por id O por idPaquete (para no romper nada)
+function findIndexByAnyId(paquetes, id) {
+  const sid = safeStr(id);
+  return paquetes.findIndex(
+    (p) => safeStr(p.id) === sid || safeStr(p.idPaquete) === sid
+  );
+}
+
+// ✅ FIX: el ID real del registro será SIEMPRE idPaquete
+function pickUnifiedId(body, paquetes) {
+  const incoming = safeStr(
+    body?.idPaquete || body?.id || body?._id || body?.codigo || body?.qr || ""
+  );
+
+  const id = incoming || genId();
+
+  const exists = paquetes.some(
+    (p) => safeStr(p.id) === id || safeStr(p.idPaquete) === id
+  );
+
+  // Mejor 409 (duplicado) para no “cambiar” IDs silenciosamente
+  return { id, exists };
 }
 
 // ---------------------
@@ -130,15 +168,16 @@ async function geocodeNominatim(query) {
 }
 
 // ---------------------
-// Router (se monta en /api y en / para compatibilidad)
+// Router (montado en /api y / para compat)
 // ---------------------
 const router = express.Router();
 
-router.get("/health", (req, res) => {
+router.get("/health", (_req, res) => {
   res.json({ ok: true, message: "En2x3 backend funcionando ✅" });
 });
 
-router.get("/paquetes", async (req, res, next) => {
+// ✅ 1) GET /api/paquetes (ARRAY)
+router.get("/paquetes", async (_req, res, next) => {
   try {
     const paquetes = await leerPaquetes();
     res.json(paquetes);
@@ -147,13 +186,16 @@ router.get("/paquetes", async (req, res, next) => {
   }
 });
 
+// ✅ 2) POST /api/paquetes
 router.post("/paquetes", async (req, res, next) => {
   try {
     const body = req.body || {};
-
     const paquetes = await leerPaquetes();
 
-    const id = pickId(body, paquetes);
+    const { id, exists } = pickUnifiedId(body, paquetes);
+    if (exists) {
+      return res.status(409).json({ ok: false, error: "ID duplicado (ya existe ese paquete)." });
+    }
 
     const nombreFinal = safeStr(body.nombreDestinatario || body.nombre || body.destinatario);
     const direccionFinal = safeStr(body.direccion || body.address);
@@ -163,14 +205,17 @@ router.post("/paquetes", async (req, res, next) => {
     const lngN = body.lng !== undefined ? num(body.lng, NaN) : NaN;
 
     const nuevo = {
-      id,
-      codigo: safeStr(body.codigo || body.qr || body.idPaquete || ""),
-      idPaquete: safeStr(body.idPaquete || ""),
+      // ✅ FIX definitivo:
+      id,          // backend key
+      idPaquete: id, // frontend key (mismo valor)
+
+      // opcionales/compat
+      codigo: safeStr(body.codigo || body.qr || ""),
       nombreDestinatario: nombreFinal || undefined,
-      nombre: nombreFinal || undefined, // compat
-      destinatario: nombreFinal || undefined, // compat
+      nombre: nombreFinal || undefined,
+      destinatario: nombreFinal || undefined,
       direccion: direccionFinal || "",
-      address: direccionFinal || "", // compat
+      address: direccionFinal || "",
       zona: zonaFinal || "",
       telefono: safeStr(body.telefono),
       valorProducto: num(body.valorProducto, 0),
@@ -195,19 +240,20 @@ router.post("/paquetes", async (req, res, next) => {
     paquetes.push(nuevo);
     await guardarPaquetes(paquetes);
 
-    res.json({ ok: true, paquete: nuevo });
+    res.status(201).json({ ok: true, paquete: nuevo });
   } catch (e) {
     next(e);
   }
 });
 
-router.put("/paquetes/:id", async (req, res, next) => {
+// ✅ PUT/PATCH /api/paquetes/:id (compat con tu app.js: manda {estado})
+async function handlerActualizarPaquete(req, res, next) {
   try {
     const { id } = req.params;
     const body = req.body || {};
 
     const paquetes = await leerPaquetes();
-    const idx = paquetes.findIndex((p) => safeStr(p.id) === safeStr(id));
+    const idx = findIndexByAnyId(paquetes, id);
     if (idx === -1) return res.status(404).json({ ok: false, error: "No existe" });
 
     const p = paquetes[idx];
@@ -215,8 +261,8 @@ router.put("/paquetes/:id", async (req, res, next) => {
     const estado = body.estado !== undefined ? normalizeEstado(body.estado) : normalizeEstado(p.estado);
 
     const patch = {
+      // NO permitimos cambiar id/idPaquete
       codigo: body.codigo !== undefined ? safeStr(body.codigo) : p.codigo,
-      idPaquete: body.idPaquete !== undefined ? safeStr(body.idPaquete) : p.idPaquete,
       nombreDestinatario:
         body.nombreDestinatario !== undefined
           ? safeStr(body.nombreDestinatario)
@@ -242,7 +288,7 @@ router.put("/paquetes/:id", async (req, res, next) => {
     if (body.lat !== undefined) patch.lat = Number.isFinite(num(body.lat, NaN)) ? num(body.lat) : null;
     if (body.lng !== undefined) patch.lng = Number.isFinite(num(body.lng, NaN)) ? num(body.lng) : null;
 
-    // Si el estado cambia, setea horas de forma coherente si no vienen
+    // Horas coherentes si cambia estado
     const prev = normalizeEstado(p.estado);
     if (estado !== prev) {
       if (estado === "entregado") {
@@ -267,17 +313,20 @@ router.put("/paquetes/:id", async (req, res, next) => {
   } catch (e) {
     next(e);
   }
-});
+}
 
-// Estado + horas (atajo)
-router.put("/paquetes/:id/estado", async (req, res, next) => {
+router.put("/paquetes/:id", handlerActualizarPaquete);
+router.patch("/paquetes/:id", handlerActualizarPaquete);
+
+// ✅ 3) PUT/PATCH /api/paquetes/:id/estado
+async function handlerEstado(req, res, next) {
   try {
     const { id } = req.params;
     const { estado } = req.body || {};
     const est = normalizeEstado(estado);
 
     const paquetes = await leerPaquetes();
-    const idx = paquetes.findIndex((p) => safeStr(p.id) === safeStr(id));
+    const idx = findIndexByAnyId(paquetes, id);
     if (idx === -1) return res.status(404).json({ ok: false, error: "No existe" });
 
     const p = paquetes[idx];
@@ -301,10 +350,13 @@ router.put("/paquetes/:id/estado", async (req, res, next) => {
   } catch (e) {
     next(e);
   }
-});
+}
 
-// Coords
-router.put("/paquetes/:id/coords", async (req, res, next) => {
+router.put("/paquetes/:id/estado", handlerEstado);
+router.patch("/paquetes/:id/estado", handlerEstado);
+
+// ✅ 4) PUT/PATCH /api/paquetes/:id/coords
+async function handlerCoords(req, res, next) {
   try {
     const { id } = req.params;
     const { lat, lng } = req.body || {};
@@ -317,7 +369,7 @@ router.put("/paquetes/:id/coords", async (req, res, next) => {
     }
 
     const paquetes = await leerPaquetes();
-    const idx = paquetes.findIndex((p) => safeStr(p.id) === safeStr(id));
+    const idx = findIndexByAnyId(paquetes, id);
     if (idx === -1) return res.status(404).json({ ok: false, error: "No existe" });
 
     paquetes[idx] = { ...paquetes[idx], lat: la, lng: ln, actualizadoEn: nowISO() };
@@ -327,21 +379,30 @@ router.put("/paquetes/:id/coords", async (req, res, next) => {
   } catch (e) {
     next(e);
   }
-});
+}
 
+router.put("/paquetes/:id/coords", handlerCoords);
+router.patch("/paquetes/:id/coords", handlerCoords);
+
+// DELETE /api/paquetes/:id
 router.delete("/paquetes/:id", async (req, res, next) => {
   try {
     const { id } = req.params;
+
     const paquetes = await leerPaquetes();
-    const nextArr = paquetes.filter((p) => safeStr(p.id) !== safeStr(id));
-    await guardarPaquetes(nextArr);
+    const idx = findIndexByAnyId(paquetes, id);
+    if (idx === -1) return res.status(404).json({ ok: false, error: "No existe" });
+
+    paquetes.splice(idx, 1);
+    await guardarPaquetes(paquetes);
+
     res.json({ ok: true });
   } catch (e) {
     next(e);
   }
 });
 
-// Geocode
+// ✅ Geocode (para tu app.js)
 router.get("/geocode", async (req, res) => {
   const direccion = safeStr(req.query.direccion);
   if (!direccion) return res.status(400).json({ ok: false, error: "Falta direccion" });
@@ -363,27 +424,30 @@ router.get("/geocode", async (req, res) => {
 // ---------------------
 // Root + mounts
 // ---------------------
-app.get("/", (req, res) => {
+app.get("/", (_req, res) => {
   res.json({
     ok: true,
     message: "En2x3 backend funcionando ✅",
-    tips: {
-      health: "/api/health",
-      paquetes: "/api/paquetes",
-    },
+    tips: { health: "/api/health", paquetes: "/api/paquetes" },
   });
 });
 
-// ✅ Canonical
+// Canonical
 app.use("/api", router);
-// ✅ Legacy (para no romper frontend viejo)
+// Legacy (si algún front viejo usa sin /api)
 app.use("/", router);
 
-// Error handler
-app.use((err, req, res, next) => {
-  console.error("❌ API error:", err);
-  res.status(500).json({ ok: false, error: "Server error" });
+// Error handler (mejorado)
+app.use((err, _req, res, _next) => {
+  const msg = String(err?.message || "Server error");
+  const isCors = msg.startsWith("CORS bloqueado para:");
+  const status = isCors ? 403 : 500;
+  console.error("❌ API error:", msg);
+  res.status(status).json({ ok: false, error: msg });
 });
 
-app.listen(PORT, () => console.log("✅ En2x3 backend en puerto", PORT));
+app.listen(PORT, () => {
+  console.log("✅ En2x3 backend PRO en puerto", PORT);
+  console.log("📦 DATA_PATH:", DATA_PATH);
+});
 
