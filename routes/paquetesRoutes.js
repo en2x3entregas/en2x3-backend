@@ -1,3 +1,4 @@
+// backend/routes/paquetesRoutes.js
 import { Router } from "express";
 import {
   listarPaquetes,
@@ -21,14 +22,16 @@ router.post("/geocode-lote", geocodificarLote);
 
 router.get("/:id", obtenerPaquete);
 router.put("/:id", actualizarPaquete);
+router.patch("/:id", actualizarPaquete); // ✅ compat extra
 router.delete("/:id", eliminarPaquete);
 
-// ✅ Estado: soporte PATCH y PUT (para compatibilidad con front antiguo)
+// Estado
 router.patch("/:id/estado", actualizarEstado);
 router.put("/:id/estado", actualizarEstado);
 
-// ✅ Coords: soporte PUT y PATCH (por si lo llaman distinto)
+// Coords
 router.put("/:id/coords", actualizarCoords);
 router.patch("/:id/coords", actualizarCoords);
 
 export default router;
+
