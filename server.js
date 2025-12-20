@@ -1,453 +1,334 @@
-// backend/server.js — en2x3 Entregas (API PRO FINAL UNIFICADA)
-// ==========================================================
-// ✅ GET /api/paquetes -> ARRAY (compat app.js)
-// ✅ POST /api/paquetes -> { ok, paquete }
-// ✅ PUT/PATCH /api/paquetes/:id/estado
-// ✅ PUT/PATCH /api/paquetes/:id/coords
-// ✅ PUT/PATCH /api/paquetes/:id (compat app.js)
-// ✅ FIX definitivo: id === idPaquete (nunca se desincronizan)
-// ✅ /api/geocode?direccion=...
-// ==========================================================
-
-import dotenv from "dotenv";
-dotenv.config();
-
 import express from "express";
-import cors from "cors";
-import { promises as fs } from "fs";
-import path from "path";
-import { fileURLToPath } from "url";
+import rateLimit from "express-rate-limit";
+import bcrypt from "bcryptjs";
+import jwt from "jsonwebtoken";
 import crypto from "crypto";
 
-const app = express();
-app.set("trust proxy", 1);
+import User from "../models/User.js";
+import { sendResetEmail } from "../utils/mailer.js";
 
-const PORT = process.env.PORT || 4000;
-const ALLOWED_ORIGIN = process.env.ALLOWED_ORIGIN || "*";
-
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-
-// Puedes opcionalmente definir DATA_PATH en .env
-const DATA_PATH =
-  process.env.DATA_PATH?.trim() ||
-  path.join(__dirname, "paquetes.json");
-
-// ---------------------
-// CORS
-// ---------------------
-const allowedList =
-  ALLOWED_ORIGIN === "*"
-    ? "*"
-    : ALLOWED_ORIGIN.split(",").map((s) => s.trim()).filter(Boolean);
-
-app.use(
-  cors({
-    origin: (origin, cb) => {
-      if (!origin) return cb(null, true);
-      if (allowedList === "*") return cb(null, true);
-      if (allowedList.includes(origin)) return cb(null, true);
-      return cb(new Error("CORS bloqueado para: " + origin));
-    },
-    methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-    allowedHeaders: [
-      "Content-Type",
-      "Authorization",
-      "x-en2x3-cc",
-      "x-en2x3-role",
-      "x-en2x3-name",
-    ],
-  })
-);
-
-app.use(express.json({ limit: "2mb" }));
-
-// ---------------------
-// Utils
-// ---------------------
-const nowISO = () => new Date().toISOString();
-const safeStr = (v) => String(v ?? "").trim();
-const num = (v, fb = 0) => {
-  const n = Number(v);
-  return Number.isFinite(n) ? n : fb;
-};
-const genId = () => crypto.randomBytes(10).toString("hex");
-
-function normalizeEstado(e) {
-  const s = String(e || "pendiente").toLowerCase();
-  if (s === "delivered") return "entregado";
-  if (s === "returned") return "devuelto";
-  if (s === "pending") return "pendiente";
-  if (["pendiente", "entregado", "devuelto"].includes(s)) return s;
-  return "pendiente";
-}
-
-// fetch compatible (node18+ ya trae fetch, pero dejamos fallback)
-async function fetchFn(...args) {
-  if (typeof fetch === "function") return fetch(...args);
-  const mod = await import("node-fetch");
-  return mod.default(...args);
-}
-
-// ---------------------
-// Helpers JSON file
-// ---------------------
-async function asegurarArchivo() {
-  try {
-    await fs.access(DATA_PATH);
-  } catch {
-    await fs.writeFile(DATA_PATH, JSON.stringify([], null, 2), "utf8");
-  }
-}
-
-async function leerPaquetes() {
-  await asegurarArchivo();
-  const raw = await fs.readFile(DATA_PATH, "utf8");
-  try {
-    const parsed = JSON.parse(raw);
-    return Array.isArray(parsed) ? parsed : [];
-  } catch {
-    return [];
-  }
-}
-
-async function guardarPaquetes(paquetes) {
-  await fs.writeFile(DATA_PATH, JSON.stringify(paquetes, null, 2), "utf8");
-}
-
-// ✅ FIX: encontrar por id O por idPaquete (para no romper nada)
-function findIndexByAnyId(paquetes, id) {
-  const sid = safeStr(id);
-  return paquetes.findIndex(
-    (p) => safeStr(p.id) === sid || safeStr(p.idPaquete) === sid
-  );
-}
-
-// ✅ FIX: el ID real del registro será SIEMPRE idPaquete
-function pickUnifiedId(body, paquetes) {
-  const incoming = safeStr(
-    body?.idPaquete || body?.id || body?._id || body?.codigo || body?.qr || ""
-  );
-
-  const id = incoming || genId();
-
-  const exists = paquetes.some(
-    (p) => safeStr(p.id) === id || safeStr(p.idPaquete) === id
-  );
-
-  // Mejor 409 (duplicado) para no “cambiar” IDs silenciosamente
-  return { id, exists };
-}
-
-// ---------------------
-// Geocode (Nominatim)
-// ---------------------
-async function geocodeNominatim(query) {
-  const url =
-    "https://nominatim.openstreetmap.org/search?format=json&limit=1&q=" +
-    encodeURIComponent(query);
-
-  const r = await fetchFn(url, {
-    headers: {
-      "User-Agent": "en2x3-entregas/1.0 (geocode)",
-      Accept: "application/json",
-    },
-  });
-
-  if (!r.ok) throw new Error("Geocode HTTP " + r.status);
-
-  const data = await r.json();
-  if (!Array.isArray(data) || data.length === 0) return null;
-
-  const item = data[0];
-  const lat = Number(item.lat);
-  const lng = Number(item.lon);
-  if (!Number.isFinite(lat) || !Number.isFinite(lng)) return null;
-
-  return { lat, lng, provider: "nominatim" };
-}
-
-// ---------------------
-// Router (montado en /api y / para compat)
-// ---------------------
 const router = express.Router();
 
-router.get("/health", (_req, res) => {
-  res.json({ ok: true, message: "En2x3 backend funcionando ✅" });
+// ========================
+// Rate limit Auth
+// ========================
+const authLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  limit: 20,
+  standardHeaders: true,
+  legacyHeaders: false
 });
 
-// ✅ 1) GET /api/paquetes (ARRAY)
-router.get("/paquetes", async (_req, res, next) => {
-  try {
-    const paquetes = await leerPaquetes();
-    res.json(paquetes);
-  } catch (e) {
-    next(e);
+// ========================
+// Helpers
+// ========================
+const safeStr = (v) => String(v ?? "").trim();
+
+function normalizeRole(r) {
+  const s = safeStr(r).toLowerCase();
+  if (s === "tienda") return "store";
+  if (s === "repartidor" || s === "mensajero" || s === "messenger") return "repartidor";
+  if (s === "admin" || s === "administrador") return "admin";
+  if (["store", "admin", "repartidor"].includes(s)) return s;
+  return "";
+}
+
+function mustJwtSecret() {
+  const secret = safeStr(process.env.JWT_SECRET);
+  if (!secret) {
+    const err = new Error("Falta JWT_SECRET en variables de entorno");
+    err.status = 500;
+    throw err;
   }
-});
+  return secret;
+}
 
-// ✅ 2) POST /api/paquetes
-router.post("/paquetes", async (req, res, next) => {
+function signToken(user) {
+  const secret = mustJwtSecret();
+  const exp = safeStr(process.env.JWT_EXPIRES_IN) || "7d";
+
+  const payload = {
+    id: String(user._id),
+    role: user.role,
+    cc: user.cc,
+    nombre: user.nombre,
+    apellido: user.apellido
+  };
+
+  return jwt.sign(payload, secret, { expiresIn: exp });
+}
+
+function getBearer(req) {
+  const h = safeStr(req.headers.authorization);
+  if (!h) return "";
+  const [type, token] = h.split(" ");
+  if (type?.toLowerCase() !== "bearer") return "";
+  return safeStr(token);
+}
+
+function authRequired(req, res, next) {
   try {
-    const body = req.body || {};
-    const paquetes = await leerPaquetes();
+    const token = getBearer(req);
+    if (!token) return res.status(401).json({ ok: false, error: "Sin token" });
 
-    const { id, exists } = pickUnifiedId(body, paquetes);
-    if (exists) {
-      return res.status(409).json({ ok: false, error: "ID duplicado (ya existe ese paquete)." });
+    const secret = mustJwtSecret();
+    const decoded = jwt.verify(token, secret);
+    req.user = decoded;
+    return next();
+  } catch {
+    return res.status(401).json({ ok: false, error: "Token inválido" });
+  }
+}
+
+// ========================
+// Seed default admins (solo si lo habilitas)
+// ========================
+// En producción: pon en Render/Hostinger
+// SEED_DEFAULT_ADMINS=true
+let __seedDone = false;
+
+async function maybeSeedDefaultAdmins() {
+  if (__seedDone) return;
+  __seedDone = true;
+
+  const flag = safeStr(process.env.SEED_DEFAULT_ADMINS).toLowerCase();
+  const enabled = flag === "true" || flag === "1" || flag === "yes";
+
+  if (!enabled) return;
+
+  const defaults = [
+    {
+      nombre: "Fernando",
+      apellido: "Jojoa",
+      cc: "16916526",
+      telefono: "0000000",
+      email: "admin.fernando@en2x3.local",
+      role: "admin",
+      password: "16916526"
+    },
+    {
+      nombre: "Hector",
+      apellido: "Giraldo",
+      cc: "1055833514",
+      telefono: "0000000",
+      email: "admin.hector@en2x3.local",
+      role: "admin",
+      password: "1055833514"
+    }
+  ];
+
+  for (const d of defaults) {
+    const cc = safeStr(d.cc).replace(/\D/g, "");
+    if (!cc) continue;
+
+    const exists = await User.findOne({ cc }).lean();
+    if (exists) continue;
+
+    const passwordHash = await bcrypt.hash(String(d.password), 10);
+
+    await User.create({
+      nombre: d.nombre,
+      apellido: d.apellido,
+      cc,
+      telefono: d.telefono,
+      email: d.email,
+      role: "admin",
+      passwordHash
+    });
+  }
+}
+
+// ========================
+// POST /api/auth/register
+// ========================
+router.post("/register", authLimiter, async (req, res) => {
+  try {
+    await maybeSeedDefaultAdmins();
+
+    const { nombre, apellido, cc, telefono, email, role, password } = req.body || {};
+
+    const n = safeStr(nombre);
+    const a = safeStr(apellido);
+    const ced = safeStr(cc).replace(/\D/g, "");
+    const tel = safeStr(telefono);
+    const em = safeStr(email).toLowerCase();
+    const rl = normalizeRole(role);
+
+    if (n.length < 2) return res.status(400).json({ ok: false, error: "Nombre inválido" });
+    if (a.length < 2) return res.status(400).json({ ok: false, error: "Apellido inválido" });
+    if (ced.length < 6) return res.status(400).json({ ok: false, error: "CC inválida" });
+    if (tel.length < 7) return res.status(400).json({ ok: false, error: "Teléfono inválido" });
+    if (!em.includes("@")) return res.status(400).json({ ok: false, error: "Email inválido" });
+    if (!rl) return res.status(400).json({ ok: false, error: "Rol inválido" });
+
+    // En producción NO permitimos registrar admin por formulario,
+    // porque tú ya tienes 2 admins fijos.
+    const allowAdmin = String(process.env.ALLOW_ADMIN_REGISTER || "").toLowerCase();
+    if (rl === "admin" && allowAdmin !== "true" && allowAdmin !== "1") {
+      return res.status(403).json({ ok: false, error: "No puedes registrar admin desde aquí." });
     }
 
-    const nombreFinal = safeStr(body.nombreDestinatario || body.nombre || body.destinatario);
-    const direccionFinal = safeStr(body.direccion || body.address);
-    const zonaFinal = safeStr(body.zona);
+    // Clave: si no mandan password, usar cc
+    const plain = safeStr(password || ced);
+    if (plain.length < 4) return res.status(400).json({ ok: false, error: "Contraseña inválida" });
 
-    const latN = body.lat !== undefined ? num(body.lat, NaN) : NaN;
-    const lngN = body.lng !== undefined ? num(body.lng, NaN) : NaN;
+    const exists = await User.findOne({ $or: [{ email: em }, { cc: ced }] }).lean();
+    if (exists) return res.status(409).json({ ok: false, error: "Usuario ya existe" });
 
-    const nuevo = {
-      // ✅ FIX definitivo:
-      id,          // backend key
-      idPaquete: id, // frontend key (mismo valor)
+    const passwordHash = await bcrypt.hash(plain, 10);
 
-      // opcionales/compat
-      codigo: safeStr(body.codigo || body.qr || ""),
-      nombreDestinatario: nombreFinal || undefined,
-      nombre: nombreFinal || undefined,
-      destinatario: nombreFinal || undefined,
-      direccion: direccionFinal || "",
-      address: direccionFinal || "",
-      zona: zonaFinal || "",
-      telefono: safeStr(body.telefono),
-      valorProducto: num(body.valorProducto, 0),
+    const user = await User.create({
+      nombre: n,
+      apellido: a,
+      cc: ced,
+      telefono: tel,
+      email: em,
+      role: rl,
+      passwordHash
+    });
 
-      estado: normalizeEstado(body.estado),
-      orden:
-        body.orden !== undefined && body.orden !== ""
-          ? num(body.orden, paquetes.length + 1)
-          : paquetes.length + 1,
-
-      lat: Number.isFinite(latN) ? latN : null,
-      lng: Number.isFinite(lngN) ? lngN : null,
-
-      fechaRegistro: new Date().toISOString().slice(0, 10),
-      creadoEn: nowISO(),
-      actualizadoEn: nowISO(),
-      horaEntrega: body.horaEntrega || null,
-      horaDevolucion: body.horaDevolucion || null,
-      notas: safeStr(body.notas || ""),
-    };
-
-    paquetes.push(nuevo);
-    await guardarPaquetes(paquetes);
-
-    res.status(201).json({ ok: true, paquete: nuevo });
-  } catch (e) {
-    next(e);
-  }
-});
-
-// ✅ PUT/PATCH /api/paquetes/:id (compat con tu app.js: manda {estado})
-async function handlerActualizarPaquete(req, res, next) {
-  try {
-    const { id } = req.params;
-    const body = req.body || {};
-
-    const paquetes = await leerPaquetes();
-    const idx = findIndexByAnyId(paquetes, id);
-    if (idx === -1) return res.status(404).json({ ok: false, error: "No existe" });
-
-    const p = paquetes[idx];
-
-    const estado = body.estado !== undefined ? normalizeEstado(body.estado) : normalizeEstado(p.estado);
-
-    const patch = {
-      // NO permitimos cambiar id/idPaquete
-      codigo: body.codigo !== undefined ? safeStr(body.codigo) : p.codigo,
-      nombreDestinatario:
-        body.nombreDestinatario !== undefined
-          ? safeStr(body.nombreDestinatario)
-          : safeStr(body.nombre ?? body.destinatario ?? p.nombreDestinatario),
-      nombre:
-        body.nombre !== undefined
-          ? safeStr(body.nombre)
-          : safeStr(body.nombreDestinatario ?? body.destinatario ?? p.nombre),
-      destinatario:
-        body.destinatario !== undefined
-          ? safeStr(body.destinatario)
-          : safeStr(body.nombreDestinatario ?? body.nombre ?? p.destinatario),
-      direccion: body.direccion !== undefined ? safeStr(body.direccion) : p.direccion,
-      address: body.address !== undefined ? safeStr(body.address) : safeStr(body.direccion ?? p.address),
-      zona: body.zona !== undefined ? safeStr(body.zona) : p.zona,
-      telefono: body.telefono !== undefined ? safeStr(body.telefono) : p.telefono,
-      valorProducto: body.valorProducto !== undefined ? num(body.valorProducto, 0) : num(p.valorProducto, 0),
-      orden: body.orden !== undefined ? num(body.orden, p.orden) : p.orden,
-      estado,
-      notas: body.notas !== undefined ? safeStr(body.notas) : safeStr(p.notas || ""),
-    };
-
-    if (body.lat !== undefined) patch.lat = Number.isFinite(num(body.lat, NaN)) ? num(body.lat) : null;
-    if (body.lng !== undefined) patch.lng = Number.isFinite(num(body.lng, NaN)) ? num(body.lng) : null;
-
-    // Horas coherentes si cambia estado
-    const prev = normalizeEstado(p.estado);
-    if (estado !== prev) {
-      if (estado === "entregado") {
-        patch.horaEntrega = body.horaEntrega || nowISO();
-        patch.horaDevolucion = null;
-      } else if (estado === "devuelto") {
-        patch.horaDevolucion = body.horaDevolucion || nowISO();
-        patch.horaEntrega = null;
-      } else {
-        patch.horaEntrega = null;
-        patch.horaDevolucion = null;
+    return res.json({
+      ok: true,
+      user: {
+        nombre: user.nombre,
+        apellido: user.apellido,
+        cc: user.cc,
+        email: user.email,
+        role: user.role
       }
-    } else {
-      if (body.horaEntrega !== undefined) patch.horaEntrega = body.horaEntrega || null;
-      if (body.horaDevolucion !== undefined) patch.horaDevolucion = body.horaDevolucion || null;
-    }
-
-    paquetes[idx] = { ...p, ...patch, actualizadoEn: nowISO() };
-    await guardarPaquetes(paquetes);
-
-    res.json({ ok: true, paquete: paquetes[idx] });
+    });
   } catch (e) {
-    next(e);
+    return res.status(500).json({ ok: false, error: "Error registrando" });
   }
-}
+});
 
-router.put("/paquetes/:id", handlerActualizarPaquete);
-router.patch("/paquetes/:id", handlerActualizarPaquete);
-
-// ✅ 3) PUT/PATCH /api/paquetes/:id/estado
-async function handlerEstado(req, res, next) {
+// ========================
+// POST /api/auth/login
+// user puede ser email o cc
+// ========================
+router.post("/login", authLimiter, async (req, res) => {
   try {
-    const { id } = req.params;
-    const { estado } = req.body || {};
-    const est = normalizeEstado(estado);
+    await maybeSeedDefaultAdmins();
 
-    const paquetes = await leerPaquetes();
-    const idx = findIndexByAnyId(paquetes, id);
-    if (idx === -1) return res.status(404).json({ ok: false, error: "No existe" });
+    const { user, password } = req.body || {};
+    const u = safeStr(user);
+    const p = safeStr(password);
 
-    const p = paquetes[idx];
-    const nuevo = { ...p, estado: est, actualizadoEn: nowISO() };
+    if (!u || !p) return res.status(400).json({ ok: false, error: "Faltan credenciales" });
 
-    if (est === "entregado") {
-      nuevo.horaEntrega = nowISO();
-      nuevo.horaDevolucion = null;
-    } else if (est === "devuelto") {
-      nuevo.horaDevolucion = nowISO();
-      nuevo.horaEntrega = null;
-    } else {
-      nuevo.horaEntrega = null;
-      nuevo.horaDevolucion = null;
-    }
+    const isEmail = u.includes("@");
+    const query = isEmail ? { email: u.toLowerCase() } : { cc: u.replace(/\D/g, "") };
 
-    paquetes[idx] = nuevo;
-    await guardarPaquetes(paquetes);
+    const found = await User.findOne(query);
+    if (!found) return res.status(401).json({ ok: false, error: "Credenciales inválidas" });
 
-    res.json({ ok: true, paquete: nuevo });
+    const ok = await bcrypt.compare(p, found.passwordHash);
+    if (!ok) return res.status(401).json({ ok: false, error: "Credenciales inválidas" });
+
+    const token = signToken(found);
+
+    return res.json({
+      ok: true,
+      token,
+      user: {
+        nombre: found.nombre,
+        apellido: found.apellido,
+        cc: found.cc,
+        email: found.email,
+        role: found.role
+      }
+    });
   } catch (e) {
-    next(e);
+    const msg = String(e?.message || "Error login");
+    return res.status(500).json({ ok: false, error: msg });
   }
-}
+});
 
-router.put("/paquetes/:id/estado", handlerEstado);
-router.patch("/paquetes/:id/estado", handlerEstado);
+// ========================
+// GET /api/auth/me
+// ========================
+router.get("/me", authRequired, async (req, res) => {
+  return res.json({ ok: true, user: req.user });
+});
 
-// ✅ 4) PUT/PATCH /api/paquetes/:id/coords
-async function handlerCoords(req, res, next) {
+// ========================
+// POST /api/auth/forgot-password
+// (respuesta neutral para no revelar si existe o no)
+// ========================
+router.post("/forgot-password", authLimiter, async (req, res) => {
   try {
-    const { id } = req.params;
-    const { lat, lng } = req.body || {};
+    await maybeSeedDefaultAdmins();
 
-    const la = num(lat, NaN);
-    const ln = num(lng, NaN);
+    const email = safeStr(req.body?.email).toLowerCase();
+    const neutral = { ok: true, message: "Si el correo existe, enviaremos instrucciones." };
 
-    if (!Number.isFinite(la) || !Number.isFinite(ln)) {
-      return res.status(400).json({ ok: false, error: "lat/lng inválidos" });
-    }
+    if (!email.includes("@")) return res.json(neutral);
 
-    const paquetes = await leerPaquetes();
-    const idx = findIndexByAnyId(paquetes, id);
-    if (idx === -1) return res.status(404).json({ ok: false, error: "No existe" });
+    const user = await User.findOne({ email });
+    if (!user) return res.json(neutral);
 
-    paquetes[idx] = { ...paquetes[idx], lat: la, lng: ln, actualizadoEn: nowISO() };
-    await guardarPaquetes(paquetes);
+    // token raw
+    const raw = crypto.randomBytes(32).toString("hex");
+    const hash = crypto.createHash("sha256").update(raw).digest("hex");
 
-    res.json({ ok: true, paquete: paquetes[idx] });
-  } catch (e) {
-    next(e);
+    user.resetTokenHash = hash;
+    user.resetTokenExpiresAt = new Date(Date.now() + 30 * 60 * 1000); // 30 min
+    await user.save();
+
+    const base =
+      safeStr(process.env.CLIENT_URL) ||
+      safeStr(process.env.SITE_URL) ||
+      safeStr(req.get("origin")) ||
+      "";
+
+    const client = base.replace(/\/$/, "");
+    const resetLink = `${client}/index.html?mode=reset&email=${encodeURIComponent(email)}&token=${encodeURIComponent(raw)}`;
+
+    await sendResetEmail({ to: email, nombre: user.nombre, resetLink });
+
+    return res.json(neutral);
+  } catch {
+    // neutral siempre
+    return res.json({ ok: true, message: "Si el correo existe, enviaremos instrucciones." });
   }
-}
+});
 
-router.put("/paquetes/:id/coords", handlerCoords);
-router.patch("/paquetes/:id/coords", handlerCoords);
-
-// DELETE /api/paquetes/:id
-router.delete("/paquetes/:id", async (req, res, next) => {
+// ========================
+// POST /api/auth/reset-password
+// ========================
+router.post("/reset-password", authLimiter, async (req, res) => {
   try {
-    const { id } = req.params;
+    await maybeSeedDefaultAdmins();
 
-    const paquetes = await leerPaquetes();
-    const idx = findIndexByAnyId(paquetes, id);
-    if (idx === -1) return res.status(404).json({ ok: false, error: "No existe" });
+    const email = safeStr(req.body?.email).toLowerCase();
+    const token = safeStr(req.body?.token);
+    const newPassword = safeStr(req.body?.newPassword);
 
-    paquetes.splice(idx, 1);
-    await guardarPaquetes(paquetes);
+    if (!email.includes("@")) return res.status(400).json({ ok: false, error: "Email inválido" });
+    if (token.length < 10) return res.status(400).json({ ok: false, error: "Token inválido" });
+    if (newPassword.length < 4) return res.status(400).json({ ok: false, error: "Contraseña muy corta" });
 
-    res.json({ ok: true });
-  } catch (e) {
-    next(e);
+    const hash = crypto.createHash("sha256").update(token).digest("hex");
+
+    const user = await User.findOne({
+      email,
+      resetTokenHash: hash,
+      resetTokenExpiresAt: { $gt: new Date() }
+    });
+
+    if (!user) return res.status(400).json({ ok: false, error: "Token inválido o expirado" });
+
+    user.passwordHash = await bcrypt.hash(newPassword, 10);
+    user.resetTokenHash = null;
+    user.resetTokenExpiresAt = null;
+    await user.save();
+
+    return res.json({ ok: true, message: "Contraseña actualizada ✅" });
+  } catch {
+    return res.status(500).json({ ok: false, error: "Error restableciendo" });
   }
 });
 
-// ✅ Geocode (para tu app.js)
-router.get("/geocode", async (req, res) => {
-  const direccion = safeStr(req.query.direccion);
-  if (!direccion) return res.status(400).json({ ok: false, error: "Falta direccion" });
+export default router;
 
-  try {
-    const q = direccion.toUpperCase().includes("CALI")
-      ? direccion
-      : `${direccion}, Cali, Colombia`;
-
-    const r = await geocodeNominatim(q);
-    if (!r) return res.json({ ok: true, found: false });
-
-    res.json({ ok: true, found: true, ...r });
-  } catch (e) {
-    res.status(500).json({ ok: false, error: String(e.message || e) });
-  }
-});
-
-// ---------------------
-// Root + mounts
-// ---------------------
-app.get("/", (_req, res) => {
-  res.json({
-    ok: true,
-    message: "En2x3 backend funcionando ✅",
-    tips: { health: "/api/health", paquetes: "/api/paquetes" },
-  });
-});
-
-// Canonical
-app.use("/api", router);
-// Legacy (si algún front viejo usa sin /api)
-app.use("/", router);
-
-// Error handler (mejorado)
-app.use((err, _req, res, _next) => {
-  const msg = String(err?.message || "Server error");
-  const isCors = msg.startsWith("CORS bloqueado para:");
-  const status = isCors ? 403 : 500;
-  console.error("❌ API error:", msg);
-  res.status(status).json({ ok: false, error: msg });
-});
-
-app.listen(PORT, () => {
-  console.log("✅ En2x3 backend PRO en puerto", PORT);
-  console.log("📦 DATA_PATH:", DATA_PATH);
-});
 
