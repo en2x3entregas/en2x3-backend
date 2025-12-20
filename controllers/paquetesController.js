@@ -1,5 +1,5 @@
 import { readPaquetes, writePaquetes } from "../utils/fileStore.js";
-import { normalizePaquete, parseCoord, isValidLatLng } from "../models/Paquete.js";
+import { normalizePaquete, parseCoord, isValidLatLng } from "../src/models/Paquete.js";
 import { geocodeNominatim, sleep } from "../utils/geocode.js";
 
 function anyId(p) {
