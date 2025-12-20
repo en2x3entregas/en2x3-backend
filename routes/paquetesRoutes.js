@@ -32,5 +32,3 @@ router.put("/:id/coords", actualizarCoords);
 router.patch("/:id/coords", actualizarCoords);
 
 export default router;
-
-
