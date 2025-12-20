@@ -1,334 +1,185 @@
+// backend/server.js — en2x3 Entregas (API PRO + AUTH + COMPAT)
+// ==========================================================
+// ✅ /api/paquetes  (rutas por router)
+// ✅ /api/auth      (JWT + reset password)
+// ✅ /api/geocode   (compat legacy)
+// ✅ CORS por CORS_ORIGINS (o ALLOWED_ORIGIN legacy)
+// ✅ Mongo opcional (si hay MONGO_URI/MONGODB_URI)
+// ✅ Render friendly (usa process.env.PORT)
+// ==========================================================
+
+import dotenv from "dotenv";
+dotenv.config();
+
 import express from "express";
-import rateLimit from "express-rate-limit";
-import bcrypt from "bcryptjs";
-import jwt from "jsonwebtoken";
-import crypto from "crypto";
+import cors from "cors";
+import helmet from "helmet";
+import morgan from "morgan";
 
-import User from "../models/User.js";
-import { sendResetEmail } from "../utils/mailer.js";
+import paquetesRoutes from "./routes/paquetesRoutes.js";
+import authRoutes from "./src/routes/auth.routes.js";
+import { connectDB } from "./src/db.js";
+import { geocodeNominatim } from "./utils/geocode.js";
 
-const router = express.Router();
+const app = express();
+app.set("trust proxy", 1);
 
-// ========================
-// Rate limit Auth
-// ========================
-const authLimiter = rateLimit({
-  windowMs: 60 * 1000,
-  limit: 20,
-  standardHeaders: true,
-  legacyHeaders: false
-});
+const PORT = process.env.PORT || 4000;
 
-// ========================
-// Helpers
-// ========================
-const safeStr = (v) => String(v ?? "").trim();
+// ---------------------
+// CORS (nuevo + legacy)
+// ---------------------
+function parseCorsOrigins() {
+  const rawNew = String(process.env.CORS_ORIGINS || "").trim();
+  const rawOld = String(process.env.ALLOWED_ORIGIN || "").trim();
+  const raw = rawNew || rawOld || "*";
 
-function normalizeRole(r) {
-  const s = safeStr(r).toLowerCase();
-  if (s === "tienda") return "store";
-  if (s === "repartidor" || s === "mensajero" || s === "messenger") return "repartidor";
-  if (s === "admin" || s === "administrador") return "admin";
-  if (["store", "admin", "repartidor"].includes(s)) return s;
-  return "";
+  if (raw === "*") return ["*"];
+
+  const list = raw
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+
+  return list.length ? list : ["*"];
 }
 
-function mustJwtSecret() {
-  const secret = safeStr(process.env.JWT_SECRET);
-  if (!secret) {
-    const err = new Error("Falta JWT_SECRET en variables de entorno");
-    err.status = 500;
-    throw err;
-  }
-  return secret;
-}
+const allowList = parseCorsOrigins();
+const allowAll = allowList.includes("*");
 
-function signToken(user) {
-  const secret = mustJwtSecret();
-  const exp = safeStr(process.env.JWT_EXPIRES_IN) || "7d";
+// ---------------------
+// Middlewares
+// ---------------------
+app.use(
+  helmet({
+    // para APIs suele evitar bloqueos raros
+    crossOriginResourcePolicy: false,
+  })
+);
 
-  const payload = {
-    id: String(user._id),
-    role: user.role,
-    cc: user.cc,
-    nombre: user.nombre,
-    apellido: user.apellido
-  };
+app.use(express.json({ limit: "2mb" }));
+app.use(morgan(process.env.NODE_ENV === "production" ? "combined" : "dev"));
 
-  return jwt.sign(payload, secret, { expiresIn: exp });
-}
-
-function getBearer(req) {
-  const h = safeStr(req.headers.authorization);
-  if (!h) return "";
-  const [type, token] = h.split(" ");
-  if (type?.toLowerCase() !== "bearer") return "";
-  return safeStr(token);
-}
-
-function authRequired(req, res, next) {
-  try {
-    const token = getBearer(req);
-    if (!token) return res.status(401).json({ ok: false, error: "Sin token" });
-
-    const secret = mustJwtSecret();
-    const decoded = jwt.verify(token, secret);
-    req.user = decoded;
-    return next();
-  } catch {
-    return res.status(401).json({ ok: false, error: "Token inválido" });
-  }
-}
-
-// ========================
-// Seed default admins (solo si lo habilitas)
-// ========================
-// En producción: pon en Render/Hostinger
-// SEED_DEFAULT_ADMINS=true
-let __seedDone = false;
-
-async function maybeSeedDefaultAdmins() {
-  if (__seedDone) return;
-  __seedDone = true;
-
-  const flag = safeStr(process.env.SEED_DEFAULT_ADMINS).toLowerCase();
-  const enabled = flag === "true" || flag === "1" || flag === "yes";
-
-  if (!enabled) return;
-
-  const defaults = [
-    {
-      nombre: "Fernando",
-      apellido: "Jojoa",
-      cc: "16916526",
-      telefono: "0000000",
-      email: "admin.fernando@en2x3.local",
-      role: "admin",
-      password: "16916526"
+app.use(
+  cors({
+    origin: (origin, cb) => {
+      // Permite requests sin origin (curl/postman/apps)
+      if (!origin) return cb(null, true);
+      if (allowAll) return cb(null, true);
+      if (allowList.includes(origin)) return cb(null, true);
+      return cb(new Error("CORS bloqueado para: " + origin), false);
     },
-    {
-      nombre: "Hector",
-      apellido: "Giraldo",
-      cc: "1055833514",
-      telefono: "0000000",
-      email: "admin.hector@en2x3.local",
-      role: "admin",
-      password: "1055833514"
-    }
-  ];
+    credentials: !allowAll,
+    methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allowedHeaders: [
+      "Content-Type",
+      "Authorization",
+      "x-en2x3-cc",
+      "x-en2x3-role",
+      "x-en2x3-name",
+    ],
+    optionsSuccessStatus: 204,
+  })
+);
 
-  for (const d of defaults) {
-    const cc = safeStr(d.cc).replace(/\D/g, "");
-    if (!cc) continue;
+// ---------------------
+// Health
+// ---------------------
+app.get("/api/health", (_req, res) => {
+  res.json({
+    ok: true,
+    name: "en2x3-backend",
+    env: process.env.NODE_ENV || "dev",
+    time: new Date().toISOString(),
+    commit: process.env.RENDER_GIT_COMMIT || null,
+  });
+});
 
-    const exists = await User.findOne({ cc }).lean();
-    if (exists) continue;
+// ---------------------
+// AUTH + PAQUETES
+// ---------------------
+app.use("/api/auth", authRoutes);
+app.use("/api/paquetes", paquetesRoutes);
 
-    const passwordHash = await bcrypt.hash(String(d.password), 10);
+// Legacy (por si algún front viejo usa sin /api)
+app.use("/auth", authRoutes);
+app.use("/paquetes", paquetesRoutes);
 
-    await User.create({
-      nombre: d.nombre,
-      apellido: d.apellido,
-      cc,
-      telefono: d.telefono,
-      email: d.email,
-      role: "admin",
-      passwordHash
-    });
+// ---------------------
+// ✅ Geocode legacy: GET /api/geocode?direccion=...
+// ---------------------
+app.get(["/api/geocode", "/geocode"], async (req, res) => {
+  const direccion = String(req.query?.direccion || "").trim();
+  if (!direccion) return res.status(400).json({ ok: false, error: "Falta direccion" });
+
+  try {
+    const q = direccion.toUpperCase().includes("CALI")
+      ? direccion
+      : `${direccion}, Cali, Colombia`;
+
+    const r = await geocodeNominatim(q);
+    if (!r) return res.json({ ok: true, found: false });
+
+    res.json({ ok: true, found: true, ...r });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: String(e?.message || e) });
   }
+});
+
+app.get("/", (_req, res) => {
+  res.json({
+    ok: true,
+    message: "En2x3 backend funcionando ✅",
+    tips: {
+      health: "/api/health",
+      paquetes: "/api/paquetes",
+      auth: "/api/auth/login",
+      geocode: "/api/geocode?direccion=...",
+    },
+  });
+});
+
+// 404
+app.use((_req, res) => {
+  res.status(404).json({ ok: false, error: "Not found" });
+});
+
+// Error handler
+app.use((err, _req, res, _next) => {
+  const msg = String(err?.message || "Error interno");
+  const isCors = msg.toLowerCase().includes("cors bloqueado");
+  const status = isCors ? 403 : 500;
+  console.error("❌ API error:", msg);
+  res.status(status).json({ ok: false, error: msg });
+});
+
+// ---------------------
+// Start + Mongo opcional
+// ---------------------
+async function start() {
+  const hasMongo =
+    String(process.env.MONGO_URI || "").trim() ||
+    String(process.env.MONGODB_URI || "").trim();
+
+  if (hasMongo) {
+    try {
+      await connectDB();
+      console.log("✅ DB conectada");
+    } catch (e) {
+      console.error("❌ DB error:", e?.message || e);
+      // NO frenamos el server: paquetes.json puede seguir funcionando
+    }
+  } else {
+    console.log("ℹ️ Sin MONGO_URI/MONGODB_URI: DB no se conecta (modo JSON OK).");
+  }
+
+  app.listen(PORT, () => {
+    console.log("✅ En2x3 backend en puerto:", PORT);
+    console.log("🌍 CORS allowList:", allowList);
+  });
 }
 
-// ========================
-// POST /api/auth/register
-// ========================
-router.post("/register", authLimiter, async (req, res) => {
-  try {
-    await maybeSeedDefaultAdmins();
+start();
 
-    const { nombre, apellido, cc, telefono, email, role, password } = req.body || {};
-
-    const n = safeStr(nombre);
-    const a = safeStr(apellido);
-    const ced = safeStr(cc).replace(/\D/g, "");
-    const tel = safeStr(telefono);
-    const em = safeStr(email).toLowerCase();
-    const rl = normalizeRole(role);
-
-    if (n.length < 2) return res.status(400).json({ ok: false, error: "Nombre inválido" });
-    if (a.length < 2) return res.status(400).json({ ok: false, error: "Apellido inválido" });
-    if (ced.length < 6) return res.status(400).json({ ok: false, error: "CC inválida" });
-    if (tel.length < 7) return res.status(400).json({ ok: false, error: "Teléfono inválido" });
-    if (!em.includes("@")) return res.status(400).json({ ok: false, error: "Email inválido" });
-    if (!rl) return res.status(400).json({ ok: false, error: "Rol inválido" });
-
-    // En producción NO permitimos registrar admin por formulario,
-    // porque tú ya tienes 2 admins fijos.
-    const allowAdmin = String(process.env.ALLOW_ADMIN_REGISTER || "").toLowerCase();
-    if (rl === "admin" && allowAdmin !== "true" && allowAdmin !== "1") {
-      return res.status(403).json({ ok: false, error: "No puedes registrar admin desde aquí." });
-    }
-
-    // Clave: si no mandan password, usar cc
-    const plain = safeStr(password || ced);
-    if (plain.length < 4) return res.status(400).json({ ok: false, error: "Contraseña inválida" });
-
-    const exists = await User.findOne({ $or: [{ email: em }, { cc: ced }] }).lean();
-    if (exists) return res.status(409).json({ ok: false, error: "Usuario ya existe" });
-
-    const passwordHash = await bcrypt.hash(plain, 10);
-
-    const user = await User.create({
-      nombre: n,
-      apellido: a,
-      cc: ced,
-      telefono: tel,
-      email: em,
-      role: rl,
-      passwordHash
-    });
-
-    return res.json({
-      ok: true,
-      user: {
-        nombre: user.nombre,
-        apellido: user.apellido,
-        cc: user.cc,
-        email: user.email,
-        role: user.role
-      }
-    });
-  } catch (e) {
-    return res.status(500).json({ ok: false, error: "Error registrando" });
-  }
-});
-
-// ========================
-// POST /api/auth/login
-// user puede ser email o cc
-// ========================
-router.post("/login", authLimiter, async (req, res) => {
-  try {
-    await maybeSeedDefaultAdmins();
-
-    const { user, password } = req.body || {};
-    const u = safeStr(user);
-    const p = safeStr(password);
-
-    if (!u || !p) return res.status(400).json({ ok: false, error: "Faltan credenciales" });
-
-    const isEmail = u.includes("@");
-    const query = isEmail ? { email: u.toLowerCase() } : { cc: u.replace(/\D/g, "") };
-
-    const found = await User.findOne(query);
-    if (!found) return res.status(401).json({ ok: false, error: "Credenciales inválidas" });
-
-    const ok = await bcrypt.compare(p, found.passwordHash);
-    if (!ok) return res.status(401).json({ ok: false, error: "Credenciales inválidas" });
-
-    const token = signToken(found);
-
-    return res.json({
-      ok: true,
-      token,
-      user: {
-        nombre: found.nombre,
-        apellido: found.apellido,
-        cc: found.cc,
-        email: found.email,
-        role: found.role
-      }
-    });
-  } catch (e) {
-    const msg = String(e?.message || "Error login");
-    return res.status(500).json({ ok: false, error: msg });
-  }
-});
-
-// ========================
-// GET /api/auth/me
-// ========================
-router.get("/me", authRequired, async (req, res) => {
-  return res.json({ ok: true, user: req.user });
-});
-
-// ========================
-// POST /api/auth/forgot-password
-// (respuesta neutral para no revelar si existe o no)
-// ========================
-router.post("/forgot-password", authLimiter, async (req, res) => {
-  try {
-    await maybeSeedDefaultAdmins();
-
-    const email = safeStr(req.body?.email).toLowerCase();
-    const neutral = { ok: true, message: "Si el correo existe, enviaremos instrucciones." };
-
-    if (!email.includes("@")) return res.json(neutral);
-
-    const user = await User.findOne({ email });
-    if (!user) return res.json(neutral);
-
-    // token raw
-    const raw = crypto.randomBytes(32).toString("hex");
-    const hash = crypto.createHash("sha256").update(raw).digest("hex");
-
-    user.resetTokenHash = hash;
-    user.resetTokenExpiresAt = new Date(Date.now() + 30 * 60 * 1000); // 30 min
-    await user.save();
-
-    const base =
-      safeStr(process.env.CLIENT_URL) ||
-      safeStr(process.env.SITE_URL) ||
-      safeStr(req.get("origin")) ||
-      "";
-
-    const client = base.replace(/\/$/, "");
-    const resetLink = `${client}/index.html?mode=reset&email=${encodeURIComponent(email)}&token=${encodeURIComponent(raw)}`;
-
-    await sendResetEmail({ to: email, nombre: user.nombre, resetLink });
-
-    return res.json(neutral);
-  } catch {
-    // neutral siempre
-    return res.json({ ok: true, message: "Si el correo existe, enviaremos instrucciones." });
-  }
-});
-
-// ========================
-// POST /api/auth/reset-password
-// ========================
-router.post("/reset-password", authLimiter, async (req, res) => {
-  try {
-    await maybeSeedDefaultAdmins();
-
-    const email = safeStr(req.body?.email).toLowerCase();
-    const token = safeStr(req.body?.token);
-    const newPassword = safeStr(req.body?.newPassword);
-
-    if (!email.includes("@")) return res.status(400).json({ ok: false, error: "Email inválido" });
-    if (token.length < 10) return res.status(400).json({ ok: false, error: "Token inválido" });
-    if (newPassword.length < 4) return res.status(400).json({ ok: false, error: "Contraseña muy corta" });
-
-    const hash = crypto.createHash("sha256").update(token).digest("hex");
-
-    const user = await User.findOne({
-      email,
-      resetTokenHash: hash,
-      resetTokenExpiresAt: { $gt: new Date() }
-    });
-
-    if (!user) return res.status(400).json({ ok: false, error: "Token inválido o expirado" });
-
-    user.passwordHash = await bcrypt.hash(newPassword, 10);
-    user.resetTokenHash = null;
-    user.resetTokenExpiresAt = null;
-    await user.save();
-
-    return res.json({ ok: true, message: "Contraseña actualizada ✅" });
-  } catch {
-    return res.status(500).json({ ok: false, error: "Error restableciendo" });
-  }
-});
-
-export default router;
 
 
