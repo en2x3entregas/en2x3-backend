@@ -1,11 +1,12 @@
+// backend/src/routes/auth.routes.js
 import express from "express";
 import rateLimit from "express-rate-limit";
 import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
 import crypto from "crypto";
 
-import User from "../models/User.js";              // ✅ FIX
-import { sendResetEmail } from "../../utils/mailer.js"; // ✅ FIX
+import User from "./models/User.js";               // ✅ FIX (ANTES NO era ./models)
+import { sendResetEmail } from "../../utils/mailer.js"; // ✅ FIX (ruta real a /utils)
 
 const router = express.Router();
 
@@ -295,7 +296,8 @@ router.post("/reset-password", authLimiter, async (req, res) => {
 
     if (!email.includes("@")) return res.status(400).json({ ok: false, error: "Email inválido" });
     if (token.length < 10) return res.status(400).json({ ok: false, error: "Token inválido" });
-    if (newPassword.length < 4) return res.status(400).json({ ok: false, error: "Contraseña muy corta" });
+    if (newPassword.length < 4)
+      return res.status(400).json({ ok: false, error: "Contraseña muy corta" });
 
     const hash = crypto.createHash("sha256").update(token).digest("hex");
 
