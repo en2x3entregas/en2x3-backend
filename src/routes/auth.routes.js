@@ -27,10 +27,18 @@ const safeStr = (v) => String(v ?? "").trim();
 
 function normalizeRole(r) {
   const s = safeStr(r).toLowerCase();
+
+  // aliases comunes
+  if (s === "administrador") return "admin";
+  if (s === "admin") return "admin";
+
   if (s === "tienda") return "store";
-  if (s === "repartidor" || s === "mensajero" || s === "messenger") return "repartidor";
-  if (s === "admin" || s === "administrador") return "admin";
-  if (["store", "admin", "repartidor"].includes(s)) return s;
+  if (s === "store") return "store";
+
+  // 🔥 importante: repartidor/mensajero => messenger (para compat con tu auth.js PRO)
+  if (s === "repartidor" || s === "mensajero" || s === "messenger") return "messenger";
+
+  if (["admin", "store", "messenger"].includes(s)) return s;
   return "";
 }
 
@@ -94,24 +102,25 @@ async function maybeSeedDefaultAdmins() {
   const enabled = flag === "true" || flag === "1" || flag === "yes";
   if (!enabled) return;
 
+  // ✅ SIN datos reales (neutral)
   const defaults = [
     {
-      nombre: "Fernando",
-      apellido: "Jojoa",
-      cc: "16916526",
-      telefono: "0000000",
-      email: "admin.fernando@en2x3.local",
+      nombre: "Admin",
+      apellido: "Principal",
+      cc: "100000001",
+      telefono: "0000000000",
+      email: "admin1@en2x3.local",
       role: "admin",
-      password: "16916526",
+      password: "100000001",
     },
     {
-      nombre: "Hector",
-      apellido: "Giraldo",
-      cc: "1055833514",
-      telefono: "0000000",
-      email: "admin.hector@en2x3.local",
+      nombre: "Admin",
+      apellido: "Secundario",
+      cc: "100000002",
+      telefono: "0000000000",
+      email: "admin2@en2x3.local",
       role: "admin",
-      password: "1055833514",
+      password: "100000002",
     },
   ];
 
@@ -137,48 +146,70 @@ async function maybeSeedDefaultAdmins() {
 }
 
 // ========================
+// Util: partir name en nombre/apellido
+// ========================
+function splitName(fullName) {
+  const t = safeStr(fullName);
+  if (!t) return { nombre: "", apellido: "" };
+  const parts = t.split(/\s+/).filter(Boolean);
+  if (parts.length === 1) return { nombre: parts[0], apellido: "" };
+  return { nombre: parts[0], apellido: parts.slice(1).join(" ") };
+}
+
+// ========================
 // POST /api/auth/register
+// - soporta {nombre,apellido,cc,telefono,email,role,password}
+// - soporta {name,cc,email,role,password} (name = "Nombre Apellido")
 // ========================
 router.post("/register", authLimiter, async (req, res) => {
   try {
     await maybeSeedDefaultAdmins();
 
-    const { nombre, apellido, cc, telefono, email, role, password } = req.body || {};
+    const body = req.body || {};
 
-    const n = safeStr(nombre);
-    const a = safeStr(apellido);
-    const ced = safeStr(cc).replace(/\D/g, "");
-    const tel = safeStr(telefono);
-    const em = safeStr(email).toLowerCase();
-    const rl = normalizeRole(role);
+    // soportar name (frontend simple)
+    let nombre = safeStr(body.nombre);
+    let apellido = safeStr(body.apellido);
 
-    if (n.length < 2) return res.status(400).json({ ok: false, error: "Nombre inválido" });
-    if (a.length < 2) return res.status(400).json({ ok: false, error: "Apellido inválido" });
-    if (ced.length < 6) return res.status(400).json({ ok: false, error: "CC inválida" });
-    if (tel.length < 7) return res.status(400).json({ ok: false, error: "Teléfono inválido" });
-    if (!em.includes("@")) return res.status(400).json({ ok: false, error: "Email inválido" });
-    if (!rl) return res.status(400).json({ ok: false, error: "Rol inválido" });
+    if (!nombre && body.name) {
+      const sp = splitName(body.name);
+      nombre = sp.nombre;
+      apellido = sp.apellido;
+    }
 
+    const cc = safeStr(body.cc).replace(/\D/g, "");
+    const telefono = safeStr(body.telefono);
+    const email = safeStr(body.email).toLowerCase();
+    const role = normalizeRole(body.role);
+
+    // password: si no viene, NO uses cc por defecto (mejor exigirla para seguridad)
+    const password = safeStr(body.password);
+
+    if (nombre.length < 2) return res.status(400).json({ ok: false, error: "Nombre inválido" });
+    // apellido se permite vacío (no rompe)
+    if (cc.length < 6) return res.status(400).json({ ok: false, error: "CC inválida" });
+    if (!email.includes("@")) return res.status(400).json({ ok: false, error: "Email inválido" });
+    if (!role) return res.status(400).json({ ok: false, error: "Rol inválido" });
+    if (password.length < 4) return res.status(400).json({ ok: false, error: "Contraseña inválida" });
+
+    // impedir registrar admin si no lo permites
     const allowAdmin = String(process.env.ALLOW_ADMIN_REGISTER || "").toLowerCase();
-    if (rl === "admin" && allowAdmin !== "true" && allowAdmin !== "1") {
+    if (role === "admin" && allowAdmin !== "true" && allowAdmin !== "1") {
       return res.status(403).json({ ok: false, error: "No puedes registrar admin desde aquí." });
     }
 
-    const plain = safeStr(password || ced);
-    if (plain.length < 4) return res.status(400).json({ ok: false, error: "Contraseña inválida" });
-
-    const exists = await User.findOne({ $or: [{ email: em }, { cc: ced }] }).lean();
+    const exists = await User.findOne({ $or: [{ email }, { cc }] }).lean();
     if (exists) return res.status(409).json({ ok: false, error: "Usuario ya existe" });
 
-    const passwordHash = await bcrypt.hash(plain, 10);
+    const passwordHash = await bcrypt.hash(password, 10);
 
     const user = await User.create({
-      nombre: n,
-      apellido: a,
-      cc: ced,
-      telefono: tel,
-      email: em,
-      role: rl,
+      nombre,
+      apellido,
+      cc,
+      telefono,
+      email,
+      role, // ✅ admin | store | messenger
       passwordHash,
     });
 
@@ -199,25 +230,47 @@ router.post("/register", authLimiter, async (req, res) => {
 
 // ========================
 // POST /api/auth/login
+// acepta:
+// - {user, password}
+// - {userOrCc, password}
+// - {email, password}
+// - {cc, password}
 // ========================
 router.post("/login", authLimiter, async (req, res) => {
   try {
     await maybeSeedDefaultAdmins();
 
-    const { user, password } = req.body || {};
-    const u = safeStr(user);
-    const p = safeStr(password);
+    const body = req.body || {};
 
-    if (!u || !p) return res.status(400).json({ ok: false, error: "Faltan credenciales" });
+    const userRaw =
+      safeStr(body.user) ||
+      safeStr(body.userOrCc) ||
+      safeStr(body.email) ||
+      safeStr(body.cc);
 
-    const isEmail = u.includes("@");
-    const query = isEmail ? { email: u.toLowerCase() } : { cc: u.replace(/\D/g, "") };
+    const password = safeStr(body.password);
+
+    if (!userRaw || !password) {
+      return res.status(400).json({ ok: false, error: "Faltan credenciales" });
+    }
+
+    const isEmail = userRaw.includes("@");
+    const query = isEmail
+      ? { email: userRaw.toLowerCase() }
+      : { cc: userRaw.replace(/\D/g, "") };
 
     const found = await User.findOne(query);
     if (!found) return res.status(401).json({ ok: false, error: "Credenciales inválidas" });
 
-    const ok = await bcrypt.compare(p, found.passwordHash);
+    const ok = await bcrypt.compare(password, found.passwordHash);
     if (!ok) return res.status(401).json({ ok: false, error: "Credenciales inválidas" });
+
+    // ✅ asegurar rol normalizado aunque viniera viejo
+    const fixedRole = normalizeRole(found.role);
+    if (fixedRole && fixedRole !== found.role) {
+      found.role = fixedRole;
+      await found.save().catch(() => {});
+    }
 
     const token = signToken(found);
 
@@ -229,7 +282,7 @@ router.post("/login", authLimiter, async (req, res) => {
         apellido: found.apellido,
         cc: found.cc,
         email: found.email,
-        role: found.role,
+        role: found.role, // admin | store | messenger
       },
     });
   } catch (e) {
@@ -323,4 +376,5 @@ router.post("/reset-password", authLimiter, async (req, res) => {
 });
 
 export default router;
+;
 
