@@ -4,8 +4,8 @@ import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
 import crypto from "crypto";
 
-import User from "./models/User.js";
-import { sendResetEmail } from "../utils/mailer.js";
+import User from "../models/User.js";              // ✅ FIX
+import { sendResetEmail } from "../../utils/mailer.js"; // ✅ FIX
 
 const router = express.Router();
 
@@ -16,7 +16,7 @@ const authLimiter = rateLimit({
   windowMs: 60 * 1000,
   limit: 20,
   standardHeaders: true,
-  legacyHeaders: false
+  legacyHeaders: false,
 });
 
 // ========================
@@ -52,7 +52,7 @@ function signToken(user) {
     role: user.role,
     cc: user.cc,
     nombre: user.nombre,
-    apellido: user.apellido
+    apellido: user.apellido,
   };
 
   return jwt.sign(payload, secret, { expiresIn: exp });
@@ -83,8 +83,6 @@ function authRequired(req, res, next) {
 // ========================
 // Seed default admins (solo si lo habilitas)
 // ========================
-// En producción: pon en Render/Hostinger
-// SEED_DEFAULT_ADMINS=true
 let __seedDone = false;
 
 async function maybeSeedDefaultAdmins() {
@@ -93,7 +91,6 @@ async function maybeSeedDefaultAdmins() {
 
   const flag = safeStr(process.env.SEED_DEFAULT_ADMINS).toLowerCase();
   const enabled = flag === "true" || flag === "1" || flag === "yes";
-
   if (!enabled) return;
 
   const defaults = [
@@ -104,7 +101,7 @@ async function maybeSeedDefaultAdmins() {
       telefono: "0000000",
       email: "admin.fernando@en2x3.local",
       role: "admin",
-      password: "16916526"
+      password: "16916526",
     },
     {
       nombre: "Hector",
@@ -113,8 +110,8 @@ async function maybeSeedDefaultAdmins() {
       telefono: "0000000",
       email: "admin.hector@en2x3.local",
       role: "admin",
-      password: "1055833514"
-    }
+      password: "1055833514",
+    },
   ];
 
   for (const d of defaults) {
@@ -133,7 +130,7 @@ async function maybeSeedDefaultAdmins() {
       telefono: d.telefono,
       email: d.email,
       role: "admin",
-      passwordHash
+      passwordHash,
     });
   }
 }
@@ -161,14 +158,11 @@ router.post("/register", authLimiter, async (req, res) => {
     if (!em.includes("@")) return res.status(400).json({ ok: false, error: "Email inválido" });
     if (!rl) return res.status(400).json({ ok: false, error: "Rol inválido" });
 
-    // En producción NO permitimos registrar admin por formulario,
-    // porque tú ya tienes 2 admins fijos.
     const allowAdmin = String(process.env.ALLOW_ADMIN_REGISTER || "").toLowerCase();
     if (rl === "admin" && allowAdmin !== "true" && allowAdmin !== "1") {
       return res.status(403).json({ ok: false, error: "No puedes registrar admin desde aquí." });
     }
 
-    // Clave: si no mandan password, usar cc
     const plain = safeStr(password || ced);
     if (plain.length < 4) return res.status(400).json({ ok: false, error: "Contraseña inválida" });
 
@@ -184,7 +178,7 @@ router.post("/register", authLimiter, async (req, res) => {
       telefono: tel,
       email: em,
       role: rl,
-      passwordHash
+      passwordHash,
     });
 
     return res.json({
@@ -194,17 +188,16 @@ router.post("/register", authLimiter, async (req, res) => {
         apellido: user.apellido,
         cc: user.cc,
         email: user.email,
-        role: user.role
-      }
+        role: user.role,
+      },
     });
-  } catch (e) {
+  } catch {
     return res.status(500).json({ ok: false, error: "Error registrando" });
   }
 });
 
 // ========================
 // POST /api/auth/login
-// user puede ser email o cc
 // ========================
 router.post("/login", authLimiter, async (req, res) => {
   try {
@@ -235,12 +228,11 @@ router.post("/login", authLimiter, async (req, res) => {
         apellido: found.apellido,
         cc: found.cc,
         email: found.email,
-        role: found.role
-      }
+        role: found.role,
+      },
     });
   } catch (e) {
-    const msg = String(e?.message || "Error login");
-    return res.status(500).json({ ok: false, error: msg });
+    return res.status(500).json({ ok: false, error: String(e?.message || "Error login") });
   }
 });
 
@@ -253,7 +245,6 @@ router.get("/me", authRequired, async (req, res) => {
 
 // ========================
 // POST /api/auth/forgot-password
-// (respuesta neutral para no revelar si existe o no)
 // ========================
 router.post("/forgot-password", authLimiter, async (req, res) => {
   try {
@@ -267,12 +258,11 @@ router.post("/forgot-password", authLimiter, async (req, res) => {
     const user = await User.findOne({ email });
     if (!user) return res.json(neutral);
 
-    // token raw
     const raw = crypto.randomBytes(32).toString("hex");
     const hash = crypto.createHash("sha256").update(raw).digest("hex");
 
     user.resetTokenHash = hash;
-    user.resetTokenExpiresAt = new Date(Date.now() + 30 * 60 * 1000); // 30 min
+    user.resetTokenExpiresAt = new Date(Date.now() + 30 * 60 * 1000);
     await user.save();
 
     const base =
@@ -288,7 +278,6 @@ router.post("/forgot-password", authLimiter, async (req, res) => {
 
     return res.json(neutral);
   } catch {
-    // neutral siempre
     return res.json({ ok: true, message: "Si el correo existe, enviaremos instrucciones." });
   }
 });
@@ -313,7 +302,7 @@ router.post("/reset-password", authLimiter, async (req, res) => {
     const user = await User.findOne({
       email,
       resetTokenHash: hash,
-      resetTokenExpiresAt: { $gt: new Date() }
+      resetTokenExpiresAt: { $gt: new Date() },
     });
 
     if (!user) return res.status(400).json({ ok: false, error: "Token inválido o expirado" });
@@ -330,3 +319,4 @@ router.post("/reset-password", authLimiter, async (req, res) => {
 });
 
 export default router;
+
