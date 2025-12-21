@@ -5,8 +5,8 @@ import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
 import crypto from "crypto";
 
-import User from "./models/User.js";               // ✅ FIX (ANTES NO era ./models)
-import { sendResetEmail } from "../../utils/mailer.js"; // ✅ FIX (ruta real a /utils)
+import User from "../models/User.js";                 // ✅ correcto (sube 1 nivel: routes -> models)
+import { sendResetEmail } from "../../utils/mailer.js"; // ✅ correcto (sube 2 niveles: routes -> src -> backend)
 
 const router = express.Router();
 
@@ -159,11 +159,13 @@ router.post("/register", authLimiter, async (req, res) => {
     if (!em.includes("@")) return res.status(400).json({ ok: false, error: "Email inválido" });
     if (!rl) return res.status(400).json({ ok: false, error: "Rol inválido" });
 
+    // No permitir admin por formulario (salvo que lo habilites)
     const allowAdmin = String(process.env.ALLOW_ADMIN_REGISTER || "").toLowerCase();
     if (rl === "admin" && allowAdmin !== "true" && allowAdmin !== "1") {
       return res.status(403).json({ ok: false, error: "No puedes registrar admin desde aquí." });
     }
 
+    // Si no mandan password, usar cc
     const plain = safeStr(password || ced);
     if (plain.length < 4) return res.status(400).json({ ok: false, error: "Contraseña inválida" });
 
@@ -296,8 +298,9 @@ router.post("/reset-password", authLimiter, async (req, res) => {
 
     if (!email.includes("@")) return res.status(400).json({ ok: false, error: "Email inválido" });
     if (token.length < 10) return res.status(400).json({ ok: false, error: "Token inválido" });
-    if (newPassword.length < 4)
+    if (newPassword.length < 4) {
       return res.status(400).json({ ok: false, error: "Contraseña muy corta" });
+    }
 
     const hash = crypto.createHash("sha256").update(token).digest("hex");
 
@@ -321,4 +324,5 @@ router.post("/reset-password", authLimiter, async (req, res) => {
 });
 
 export default router;
+
 
