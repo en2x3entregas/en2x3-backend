@@ -1,4 +1,6 @@
-import nodemailer from "nodemailer";
+import nodemailer from "nodemailer"
+import User from "../models/User.js";
+import { sendResetEmail } from "../../utils/mailer.js";
 
 function boolEnv(v) {
   return String(v || "").toLowerCase() === "true";
@@ -48,3 +50,4 @@ export async function sendResetEmail({ to, nombre, resetLink }) {
     html
   });
 }
+
