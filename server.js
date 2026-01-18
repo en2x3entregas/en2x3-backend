@@ -1,4 +1,4 @@
-// backend/server.js — En2x3 Backend (Render ready)
+// backend/server.js — En2x3 Backend (VPS/Render ready)
 
 import express from "express";
 import cors from "cors";
@@ -7,6 +7,7 @@ import morgan from "morgan";
 import rateLimit from "express-rate-limit";
 
 import { PORT, NODE_ENV, CORS_ORIGINS } from "./src/config.js";
+import { pingMongo } from "./src/mongo.js";
 
 import authRoutes from "./routes/auth.routes.js";
 import paquetesRoutes from "./routes/paquetesRoutes.js";
@@ -96,7 +97,9 @@ app.get("/", (_req, res) => {
 });
 
 // 404
-app.use((_req, res) => res.status(404).json({ ok: false, error: "Ruta no encontrada" }));
+app.use((_req, res) =>
+  res.status(404).json({ ok: false, error: "Ruta no encontrada" })
+);
 
 // error handler
 app.use((err, _req, res, _next) => {
@@ -105,9 +108,26 @@ app.use((err, _req, res, _next) => {
   res.status(status).json({ ok: false, error: msg });
 });
 
+// ---------------------
+// ✅ Mongo ping al arrancar (si hay MONGODB_URI)
+// ---------------------
+if (process.env.MONGODB_URI) {
+  try {
+    await pingMongo();
+    console.log("✅ MongoDB conectado OK");
+  } catch (e) {
+    console.error("❌ Error conectando a MongoDB:", e?.message || e);
+    process.exit(1);
+  }
+} else {
+  console.log("ℹ️ MONGODB_URI no definido: arrancando sin Mongo (modo legacy).");
+}
+
 app.listen(PORT, () => {
   console.log(`✅ en2x3 backend escuchando en puerto ${PORT}`);
-  console.log(`🌍 CORS_ORIGINS: ${(Array.isArray(CORS_ORIGINS) ? CORS_ORIGINS : []).join(", ")}`);
+  console.log(
+    `🌍 CORS_ORIGINS: ${(Array.isArray(CORS_ORIGINS) ? CORS_ORIGINS : []).join(", ")}`
+  );
 });
 
 
