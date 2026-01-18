@@ -1,4 +1,5 @@
 // backend/server.js — En2x3 Backend (VPS/Render ready)
+import "dotenv/config";
 
 import express from "express";
 import cors from "cors";
@@ -7,6 +8,8 @@ import morgan from "morgan";
 import rateLimit from "express-rate-limit";
 
 import { PORT, NODE_ENV, CORS_ORIGINS } from "./src/config.js";
+
+// ✅ Paso 4: ping Mongo al arrancar (falla rápido si la URI está mal)
 import { pingMongo } from "./src/mongo.js";
 
 import authRoutes from "./routes/auth.routes.js";
@@ -108,26 +111,27 @@ app.use((err, _req, res, _next) => {
   res.status(status).json({ ok: false, error: msg });
 });
 
-// ---------------------
-// ✅ Mongo ping al arrancar (si hay MONGODB_URI)
-// ---------------------
-if (process.env.MONGODB_URI) {
-  try {
+async function start() {
+  const mongoUri = process.env.MONGODB_URI || process.env.MONGO_URI || "";
+  if (mongoUri) {
     await pingMongo();
     console.log("✅ MongoDB conectado OK");
-  } catch (e) {
-    console.error("❌ Error conectando a MongoDB:", e?.message || e);
-    process.exit(1);
+  } else {
+    console.log("⚠️ MONGODB_URI no está definida. (Mongo no se está usando)");
   }
-} else {
-  console.log("ℹ️ MONGODB_URI no definido: arrancando sin Mongo (modo legacy).");
+
+  app.listen(PORT, () => {
+    console.log(`✅ en2x3 backend escuchando en puerto ${PORT}`);
+    console.log(
+      `🌍 CORS_ORIGINS: ${(Array.isArray(CORS_ORIGINS) ? CORS_ORIGINS : []).join(", ")}`
+    );
+  });
 }
 
-app.listen(PORT, () => {
-  console.log(`✅ en2x3 backend escuchando en puerto ${PORT}`);
-  console.log(
-    `🌍 CORS_ORIGINS: ${(Array.isArray(CORS_ORIGINS) ? CORS_ORIGINS : []).join(", ")}`
-  );
+start().catch((e) => {
+  console.error("❌ Fallo al iniciar el backend:", e?.message || e);
+  process.exit(1);
 });
+
 
 
